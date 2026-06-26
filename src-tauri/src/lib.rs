@@ -7,7 +7,37 @@ use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::mpsc;
 
-use state::{AppConfig, AppState, LogEntry, ProxyCommand};
+use state::{AppConfig, AppState, InterfaceInfo, LogEntry, ProxyCommand};
+
+// ── Interface enumeration ──────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_interfaces() -> Result<Vec<InterfaceInfo>, String> {
+    let raw = if_addrs::get_if_addrs()
+        .map_err(|e| format!("Impossibile enumerare interfacce: {e}"))?;
+
+    let mut result: Vec<InterfaceInfo> = Vec::new();
+
+    for iface in raw {
+        if iface.is_loopback() { continue; }
+
+        let ip = match &iface.addr {
+            if_addrs::IfAddr::V4(v4) => v4.ip.to_string(),
+            _ => continue,
+        };
+
+        if let Some(entry) = result.iter_mut().find(|e| e.name == iface.name) {
+            entry.ip_addresses.push(ip);
+        } else {
+            result.push(InterfaceInfo {
+                name:         iface.name.clone(),
+                ip_addresses: vec![ip],
+            });
+        }
+    }
+
+    Ok(result)
+}
 
 // ── Tauri commands ─────────────────────────────────────────────────────────
 
@@ -37,12 +67,15 @@ async fn connect(
 ) -> Result<(), String> {
     let current = state.status.lock().await.clone();
     if current == "Connected" || current == "Connecting" {
-        return Err(format!("Already {current}"));
+        return Err(format!("Già {current}"));
     }
 
     let config = state.config.lock().await.clone();
     if config.mac_ip.trim().is_empty() {
         return Err("IP del Mac AutoBridge richiesto".to_string());
+    }
+    if config.local_bind_ip.trim().is_empty() {
+        return Err("Seleziona un adattatore di rete".to_string());
     }
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<ProxyCommand>(8);
@@ -50,8 +83,8 @@ async fn connect(
 
     state.set_status(&app, "Connecting").await;
     state.log(&app, LogEntry::info(format!(
-        "Avvio proxy — Mac: {}:{}  DoIP locale: {}",
-        config.mac_ip, config.mac_ws_port, config.local_doip_port
+        "Avvio proxy — Mac: {}:{}  Adattatore: {}",
+        config.mac_ip, config.mac_ws_port, config.local_bind_ip
     ))).await;
 
     let state_clone = (*state).clone();
@@ -88,6 +121,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
+            get_interfaces,
             get_status,
             get_logs,
             update_config,

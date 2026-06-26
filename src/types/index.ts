@@ -1,8 +1,14 @@
+export interface InterfaceInfo {
+  name:         string;
+  ip_addresses: string[];
+}
+
 export interface AppConfig {
-  mac_ip:          string;
-  mac_ws_port:     number;
-  local_doip_port: number;
-  session_label:   string;
+  mac_ip:        string;
+  mac_ws_port:   number;
+  local_bind_ip: string;
+  vin:           string;
+  session_label: string;
 }
 
 export interface LogEntry {

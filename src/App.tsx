@@ -1,30 +1,40 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AppConfig, LogEntry, ConnectionStatus } from "./types";
+import type { AppConfig, InterfaceInfo, LogEntry, ConnectionStatus } from "./types";
 
 const DEFAULT_CONFIG: AppConfig = {
-  mac_ip:          "",
-  mac_ws_port:     8765,
-  local_doip_port: 13400,
-  session_label:   "",
+  mac_ip:        "",
+  mac_ws_port:   8765,
+  local_bind_ip: "",
+  vin:           "",
+  session_label: "",
 };
 
 export default function App() {
-  const [config, setConfig]   = useState<AppConfig>(DEFAULT_CONFIG);
-  const [status, setStatus]   = useState<ConnectionStatus>("Disconnected");
-  const [logs, setLogs]       = useState<LogEntry[]>([]);
-  const [isBusy, setIsBusy]   = useState(false);
-  const [error, setError]     = useState<string | null>(null);
+  const [interfaces, setInterfaces] = useState<InterfaceInfo[]>([]);
+  const [config, setConfig]         = useState<AppConfig>(DEFAULT_CONFIG);
+  const [status, setStatus]         = useState<ConnectionStatus>("Disconnected");
+  const [logs, setLogs]             = useState<LogEntry[]>([]);
+  const [isBusy, setIsBusy]         = useState(false);
+  const [error, setError]           = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    invoke<InterfaceInfo[]>("get_interfaces")
+      .then(ifaces => {
+        setInterfaces(ifaces);
+        if (ifaces.length > 0 && ifaces[0].ip_addresses[0]) {
+          setConfig(p => ({ ...p, local_bind_ip: ifaces[0].ip_addresses[0] }));
+        }
+      })
+      .catch(console.error);
+
     invoke<LogEntry[]>("get_logs").then(setLogs).catch(console.error);
     invoke<string>("get_status").then(s => setStatus(s as ConnectionStatus)).catch(console.error);
 
-    const unLog = listen<LogEntry>("log_entry", e => {
-      setLogs(prev => [...prev.slice(-999), e.payload]);
-    });
+    const unLog    = listen<LogEntry>("log_entry", e =>
+      setLogs(prev => [...prev.slice(-999), e.payload]));
     const unStatus = listen<string>("connection_status", e => {
       setStatus(e.payload as ConnectionStatus);
       setIsBusy(false);
@@ -59,18 +69,17 @@ export default function App() {
   const isConnected  = status === "Connected";
   const isConnecting = status === "Connecting";
   const locked       = isConnected || isConnecting;
-  const canConnect   = !locked && config.mac_ip.trim().length > 0;
+  const canConnect   = !locked && config.mac_ip.trim().length > 0 && config.local_bind_ip.trim().length > 0;
 
   return (
     <div className="app">
 
-      {/* ── Header ── */}
       <header className="header">
         <div className="header-left">
           <span className="logo-icon">⟨/⟩</span>
           <span className="logo-text">AutoBridge <span className="accent">Win</span></span>
           <span className="badge">v0.1.0</span>
-          <span className="badge badge-protocol">DoIP Proxy</span>
+          <span className="badge badge-protocol">ISTA / ENET</span>
         </div>
         <div className={`status-pill status-${status.toLowerCase()}`}>
           <span className="status-dot" />
@@ -78,11 +87,10 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Layout ── */}
       <div className="layout">
-
-        {/* ── Sidebar ── */}
         <aside className="sidebar">
+
+          {/* ── AutoBridge Mac ── */}
           <div className="section-label">AutoBridge Mac</div>
 
           <div className="field">
@@ -108,19 +116,47 @@ export default function App() {
           </div>
 
           <div className="divider" />
-          <div className="section-label">Software Diagnosi</div>
 
+          {/* ── Adattatore di rete ── */}
+          <div className="section-label">Adattatore di rete</div>
           <div className="field">
-            <label>Porta DoIP locale</label>
-            <input
-              type="number"
-              value={config.local_doip_port}
-              onChange={e => setConfig(p => ({ ...p, local_doip_port: parseInt(e.target.value) || 13400 }))}
+            <label>Scheda Ethernet (ENET cable)</label>
+            <select
+              value={config.local_bind_ip}
+              onChange={e => setConfig(p => ({ ...p, local_bind_ip: e.target.value }))}
               disabled={locked}
-              min={1024} max={65535}
+            >
+              {interfaces.length === 0 && <option value="">Nessuna interfaccia trovata</option>}
+              {interfaces.flatMap(iface =>
+                iface.ip_addresses.map(ip => (
+                  <option key={`${iface.name}-${ip}`} value={ip}>
+                    {iface.name} — {ip}
+                  </option>
+                ))
+              )}
+            </select>
+            <span className="field-hint">
+              Seleziona la scheda collegata al cavo ENET BMW
+            </span>
+          </div>
+
+          <div className="divider" />
+
+          {/* ── Veicolo ── */}
+          <div className="section-label">Veicolo</div>
+          <div className="field">
+            <label>VIN (opzionale)</label>
+            <input
+              type="text"
+              placeholder="WBA12345678901234"
+              maxLength={17}
+              value={config.vin}
+              onChange={e => setConfig(p => ({ ...p, vin: e.target.value.toUpperCase() }))}
+              disabled={locked}
+              style={{ fontFamily: "monospace", letterSpacing: "0.05em" }}
             />
             <span className="field-hint">
-              Il software di diagnosi si connette a 127.0.0.1:{config.local_doip_port}
+              17 caratteri — ISTA lo verifica durante il discovery
             </span>
           </div>
 
@@ -144,9 +180,15 @@ export default function App() {
                 <span className="accent">ws://{config.mac_ip}:{config.mac_ws_port}</span>
               </div>
               <div className="info-row">
-                <span className="info-label">DoIP locale</span>
-                <span className="accent">127.0.0.1:{config.local_doip_port}</span>
+                <span className="info-label">UDP/TCP DoIP</span>
+                <span className="accent">{config.local_bind_ip}:13400</span>
               </div>
+              {config.vin && (
+                <div className="info-row">
+                  <span className="info-label">VIN</span>
+                  <span className="accent" style={{ fontFamily: "monospace" }}>{config.vin}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -163,7 +205,6 @@ export default function App() {
           </button>
         </aside>
 
-        {/* ── Log panel ── */}
         <main className="log-panel">
           <div className="log-toolbar">
             <span className="section-label" style={{ margin: 0 }}>Log</span>
@@ -193,14 +234,12 @@ export default function App() {
         </main>
       </div>
 
-      {/* ── Footer ── */}
       <footer className="footer">
-        <span>DoIP Proxy — ISO 13400-2</span>
+        <span>DoIP Proxy — ISO 13400-2 — ISTA/ENET</span>
         <span className="footer-sep">·</span>
-        {isConnected
-          ? <><span className="accent">ws://{config.mac_ip}:{config.mac_ws_port} ▲</span><span className="footer-sep">·</span></>
-          : null
-        }
+        {isConnected && (
+          <><span className="accent">{config.local_bind_ip}:13400 ▲</span><span className="footer-sep">·</span></>
+        )}
         <span>AutoBridge Win 0.1.0</span>
       </footer>
     </div>

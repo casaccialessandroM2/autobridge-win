@@ -37,6 +37,14 @@ impl LogEntry {
     pub fn debug(m: impl Into<String>) -> Self { Self::new("DEBUG", m) }
 }
 
+// ── Interface info ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterfaceInfo {
+    pub name:         String,
+    pub ip_addresses: Vec<String>,
+}
+
 // ── App config ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,8 +53,10 @@ pub struct AppConfig {
     pub mac_ip: String,
     /// Porta WebSocket su AutoBridge Mac (default 8765)
     pub mac_ws_port: u16,
-    /// Porta TCP locale su cui ascoltare il software diagnosi (default 13400)
-    pub local_doip_port: u16,
+    /// Adattatore di rete locale da cui ISTA si aspetta il gateway (es. "192.168.1.10")
+    pub local_bind_ip: String,
+    /// VIN del veicolo (17 caratteri) — inviato nella Vehicle Identification Response
+    pub vin: String,
     /// Etichetta sessione (opzionale)
     pub session_label: String,
 }
@@ -54,10 +64,11 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            mac_ip:          String::new(),
-            mac_ws_port:     8765,
-            local_doip_port: 13400,
-            session_label:   String::new(),
+            mac_ip:         String::new(),
+            mac_ws_port:    8765,
+            local_bind_ip:  String::new(),
+            vin:            String::new(),
+            session_label:  String::new(),
         }
     }
 }
