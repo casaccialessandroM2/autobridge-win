@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { AppConfig, InterfaceInfo, LogEntry, ConnectionStatus } from "./types";
 
 const DEFAULT_CONFIG: AppConfig = {
-  relay_url:      "ws://localhost:8080",
+  relay_url:      "wss://autobridge-relay-production.up.railway.app",
   session_id:     "",
   local_bind_ip:  "",
   vin:            "",

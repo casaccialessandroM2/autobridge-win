@@ -62,7 +62,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            relay_url:      "ws://localhost:8080".to_string(),
+            relay_url:      "wss://autobridge-relay-production.up.railway.app".to_string(),
             session_id:     String::new(),
             local_bind_ip:  String::new(),
             vin:            String::new(),
