@@ -49,26 +49,23 @@ pub struct InterfaceInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    /// IP del Mac che esegue AutoBridge Mac
-    pub mac_ip: String,
-    /// Porta WebSocket su AutoBridge Mac (default 8765)
-    pub mac_ws_port: u16,
+    /// URL del relay server (es. "ws://localhost:8080" o "wss://relay.autobridge.io")
+    pub relay_url: String,
+    /// Codice sessione a 6 caratteri mostrato da AutoBridge Mac
+    pub session_id: String,
     /// Adattatore di rete locale da cui ISTA si aspetta il gateway (es. "192.168.1.10")
     pub local_bind_ip: String,
     /// VIN del veicolo (17 caratteri) — inviato nella Vehicle Identification Response
     pub vin: String,
-    /// Etichetta sessione (opzionale)
-    pub session_label: String,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            mac_ip:         String::new(),
-            mac_ws_port:    8765,
+            relay_url:      "ws://localhost:8080".to_string(),
+            session_id:     String::new(),
             local_bind_ip:  String::new(),
             vin:            String::new(),
-            session_label:  String::new(),
         }
     }
 }

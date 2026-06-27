@@ -71,8 +71,8 @@ async fn connect(
     }
 
     let config = state.config.lock().await.clone();
-    if config.mac_ip.trim().is_empty() {
-        return Err("IP del Mac AutoBridge richiesto".to_string());
+    if config.session_id.trim().is_empty() {
+        return Err("Inserisci il codice sessione di AutoBridge Mac".to_string());
     }
     if config.local_bind_ip.trim().is_empty() {
         return Err("Seleziona un adattatore di rete".to_string());
@@ -83,8 +83,8 @@ async fn connect(
 
     state.set_status(&app, "Connecting").await;
     state.log(&app, LogEntry::info(format!(
-        "Avvio proxy — Mac: {}:{}  Adattatore: {}",
-        config.mac_ip, config.mac_ws_port, config.local_bind_ip
+        "Avvio proxy — Relay: {}  Sessione: {}  Adattatore: {}",
+        config.relay_url, config.session_id, config.local_bind_ip
     ))).await;
 
     let state_clone = (*state).clone();

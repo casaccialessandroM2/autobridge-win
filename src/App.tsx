@@ -4,11 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import type { AppConfig, InterfaceInfo, LogEntry, ConnectionStatus } from "./types";
 
 const DEFAULT_CONFIG: AppConfig = {
-  mac_ip:        "",
-  mac_ws_port:   8765,
-  local_bind_ip: "",
-  vin:           "",
-  session_label: "",
+  relay_url:      "ws://localhost:8080",
+  session_id:     "",
+  local_bind_ip:  "",
+  vin:            "",
 };
 
 export default function App() {
@@ -69,7 +68,11 @@ export default function App() {
   const isConnected  = status === "Connected";
   const isConnecting = status === "Connecting";
   const locked       = isConnected || isConnecting;
-  const canConnect   = !locked && config.mac_ip.trim().length > 0 && config.local_bind_ip.trim().length > 0;
+  const canConnect   = !locked
+    && config.session_id.trim().length === 6
+    && config.local_bind_ip.trim().length > 0;
+
+  const sessionValid = config.session_id.trim().length === 6;
 
   return (
     <div className="app">
@@ -79,7 +82,7 @@ export default function App() {
           <span className="logo-icon">⟨/⟩</span>
           <span className="logo-text">AutoBridge <span className="accent">Win</span></span>
           <span className="badge">v0.1.0</span>
-          <span className="badge badge-protocol">ISTA / ENET</span>
+          <span className="badge badge-protocol">ISTA · DoIP</span>
         </div>
         <div className={`status-pill status-${status.toLowerCase()}`}>
           <span className="status-dot" />
@@ -90,29 +93,37 @@ export default function App() {
       <div className="layout">
         <aside className="sidebar">
 
-          {/* ── AutoBridge Mac ── */}
-          <div className="section-label">AutoBridge Mac</div>
+          {/* ── Codice sessione ── */}
+          <div className="section-label">Codice Sessione Mac</div>
 
           <div className="field">
-            <label>IP del Mac</label>
+            <label>Codice mostrato da AutoBridge Mac</label>
             <input
               type="text"
-              placeholder="192.168.1.50"
-              value={config.mac_ip}
-              onChange={e => setConfig(p => ({ ...p, mac_ip: e.target.value }))}
+              placeholder="ABC123"
+              maxLength={6}
+              value={config.session_id}
+              onChange={e => setConfig(p => ({ ...p, session_id: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "") }))}
               disabled={locked}
+              className={`session-input ${sessionValid ? "valid" : ""}`}
             />
+            {config.session_id.length > 0 && !sessionValid && (
+              <span className="field-hint warn">Il codice deve essere 6 caratteri</span>
+            )}
           </div>
 
           <div className="field">
-            <label>Porta WebSocket Mac</label>
+            <label>Relay Server URL</label>
             <input
-              type="number"
-              value={config.mac_ws_port}
-              onChange={e => setConfig(p => ({ ...p, mac_ws_port: parseInt(e.target.value) || 8765 }))}
+              type="text"
+              placeholder="ws://localhost:8080"
+              value={config.relay_url}
+              onChange={e => setConfig(p => ({ ...p, relay_url: e.target.value }))}
               disabled={locked}
-              min={1024} max={65535}
             />
+            <span className="field-hint">
+              Stesso server usato da AutoBridge Mac
+            </span>
           </div>
 
           <div className="divider" />
@@ -120,7 +131,7 @@ export default function App() {
           {/* ── Adattatore di rete ── */}
           <div className="section-label">Adattatore di rete</div>
           <div className="field">
-            <label>Scheda Ethernet (ENET cable)</label>
+            <label>Scheda Ethernet (cavo ENET BMW)</label>
             <select
               value={config.local_bind_ip}
               onChange={e => setConfig(p => ({ ...p, local_bind_ip: e.target.value }))}
@@ -135,9 +146,6 @@ export default function App() {
                 ))
               )}
             </select>
-            <span className="field-hint">
-              Seleziona la scheda collegata al cavo ENET BMW
-            </span>
           </div>
 
           <div className="divider" />
@@ -145,7 +153,7 @@ export default function App() {
           {/* ── Veicolo ── */}
           <div className="section-label">Veicolo</div>
           <div className="field">
-            <label>VIN (opzionale)</label>
+            <label>VIN (opzionale — ISTA lo verifica)</label>
             <input
               type="text"
               placeholder="WBA12345678901234"
@@ -155,20 +163,6 @@ export default function App() {
               disabled={locked}
               style={{ fontFamily: "monospace", letterSpacing: "0.05em" }}
             />
-            <span className="field-hint">
-              17 caratteri — ISTA lo verifica durante il discovery
-            </span>
-          </div>
-
-          <div className="field">
-            <label>Etichetta sessione</label>
-            <input
-              type="text"
-              placeholder="opzionale"
-              value={config.session_label}
-              onChange={e => setConfig(p => ({ ...p, session_label: e.target.value }))}
-              disabled={locked}
-            />
           </div>
 
           {error && <div className="error-box">{error}</div>}
@@ -176,8 +170,8 @@ export default function App() {
           {isConnected && (
             <div className="info-box">
               <div className="info-row">
-                <span className="info-label">Mac WS</span>
-                <span className="accent">ws://{config.mac_ip}:{config.mac_ws_port}</span>
+                <span className="info-label">Sessione</span>
+                <span className="accent session-badge">{config.session_id}</span>
               </div>
               <div className="info-row">
                 <span className="info-label">UDP/TCP DoIP</span>
@@ -218,7 +212,7 @@ export default function App() {
               ? (
                 <div className="log-empty">
                   <span className="log-empty-icon">◎</span>
-                  <span>Nessun log — connettiti per iniziare</span>
+                  <span>Inserisci il codice sessione e premi Connetti</span>
                 </div>
               )
               : logs.map((e, i) => (
@@ -235,7 +229,7 @@ export default function App() {
       </div>
 
       <footer className="footer">
-        <span>DoIP Proxy — ISO 13400-2 — ISTA/ENET</span>
+        <span>DoIP Proxy — ISO 13400-2</span>
         <span className="footer-sep">·</span>
         {isConnected && (
           <><span className="accent">{config.local_bind_ip}:13400 ▲</span><span className="footer-sep">·</span></>

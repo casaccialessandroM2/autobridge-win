@@ -270,3 +270,23 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
   flex-shrink: 0;
 }
 .footer-sep { color: var(--border-hi); }
+
+/* ── Session code input ───────────────────────────────────────────────────── */
+.session-input {
+  font-family: monospace;
+  font-size: 20px;
+  letter-spacing: 0.3em;
+  text-align: center;
+  text-transform: uppercase;
+}
+.session-input.valid { border-color: var(--success) !important; }
+.session-badge {
+  font-family: monospace;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  background: rgba(0,200,255,0.1);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.field-hint.warn { color: var(--warn); }

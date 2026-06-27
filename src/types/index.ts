@@ -4,11 +4,10 @@ export interface InterfaceInfo {
 }
 
 export interface AppConfig {
-  mac_ip:        string;
-  mac_ws_port:   number;
-  local_bind_ip: string;
-  vin:           string;
-  session_label: string;
+  relay_url:      string;
+  session_id:     string;
+  local_bind_ip:  string;
+  vin:            string;
 }
 
 export interface LogEntry {
