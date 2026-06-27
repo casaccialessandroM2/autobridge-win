@@ -55,9 +55,18 @@ pub struct AppConfig {
     pub session_id: String,
     /// Adattatore di rete locale da cui ISTA si aspetta il gateway (es. "192.168.1.10")
     pub local_bind_ip: String,
-    /// VIN del veicolo (17 caratteri) — inviato nella Vehicle Identification Response
+    /// VIN del veicolo (17 caratteri) — opzionale, ISTA lo verifica via tunnel
     pub vin: String,
+    /// Porta TCP diagnostica su cui ISTA si connette (default BMW ENET: 6801)
+    #[serde(default = "default_tcp_port")]
+    pub tcp_port: u16,
+    /// Porta UDP discovery su cui ISTA cerca la centralina (default BMW ENET: 6811)
+    #[serde(default = "default_udp_port")]
+    pub udp_port: u16,
 }
+
+fn default_tcp_port() -> u16 { 6801 }
+fn default_udp_port() -> u16 { 6811 }
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -66,6 +75,8 @@ impl Default for AppConfig {
             session_id:     String::new(),
             local_bind_ip:  String::new(),
             vin:            String::new(),
+            tcp_port:       6801,
+            udp_port:       6811,
         }
     }
 }

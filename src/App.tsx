@@ -8,6 +8,8 @@ const DEFAULT_CONFIG: AppConfig = {
   session_id:     "",
   local_bind_ip:  "",
   vin:            "",
+  tcp_port:       6801,
+  udp_port:       6811,
 };
 
 export default function App() {
@@ -208,6 +210,28 @@ export default function App() {
             </select>
           </div>
 
+          <div className="field" style={{ display: "flex", gap: "10px" }}>
+            <div style={{ flex: 1 }}>
+              <label>Porta TCP</label>
+              <input
+                type="number"
+                value={config.tcp_port}
+                onChange={e => setConfig(p => ({ ...p, tcp_port: Number(e.target.value) }))}
+                disabled={locked}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label>Porta UDP</label>
+              <input
+                type="number"
+                value={config.udp_port}
+                onChange={e => setConfig(p => ({ ...p, udp_port: Number(e.target.value) }))}
+                disabled={locked}
+              />
+            </div>
+          </div>
+          <span className="field-hint">Default BMW ENET: TCP 6801 · UDP 6811</span>
+
           <div className="divider" />
 
           {/* ── Veicolo ── */}
@@ -234,8 +258,8 @@ export default function App() {
                 <span className="accent session-badge">{config.session_id}</span>
               </div>
               <div className="info-row">
-                <span className="info-label">UDP/TCP DoIP</span>
-                <span className="accent">{config.local_bind_ip}:13400</span>
+                <span className="info-label">TCP / UDP</span>
+                <span className="accent">{config.local_bind_ip}:{config.tcp_port} · {config.udp_port}</span>
               </div>
               {config.vin && (
                 <div className="info-row">
@@ -289,10 +313,10 @@ export default function App() {
       </div>
 
       <footer className="footer">
-        <span>DoIP Proxy — ISO 13400-2</span>
+        <span>Tunnel trasparente</span>
         <span className="footer-sep">·</span>
         {isConnected && (
-          <><span className="accent">{config.local_bind_ip}:13400 ▲</span><span className="footer-sep">·</span></>
+          <><span className="accent">{config.local_bind_ip}:{config.tcp_port} ▲</span><span className="footer-sep">·</span></>
         )}
         <span>AutoBridge Win 0.1.0</span>
       </footer>

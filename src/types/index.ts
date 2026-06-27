@@ -8,6 +8,8 @@ export interface AppConfig {
   session_id:     string;
   local_bind_ip:  string;
   vin:            string;
+  tcp_port:       number;
+  udp_port:       number;
 }
 
 export interface LogEntry {
