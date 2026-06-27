@@ -17,6 +17,10 @@ export default function App() {
   const [logs, setLogs]             = useState<LogEntry[]>([]);
   const [isBusy, setIsBusy]         = useState(false);
   const [error, setError]           = useState<string | null>(null);
+  const [isTestingRelay, setIsTestingRelay] = useState(false);
+  const [relayResult, setRelayResult] = useState<{
+    success: boolean; latency_ms: number; relay_url: string; error: string | null;
+  } | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -64,6 +68,20 @@ export default function App() {
   };
 
   const clearLogs = useCallback(() => setLogs([]), []);
+
+  const handleTestRelay = async () => {
+    setIsTestingRelay(true);
+    setRelayResult(null);
+    try {
+      await invoke("update_config", { config });
+      const result = await invoke<{ success: boolean; latency_ms: number; relay_url: string; error: string | null }>("test_relay");
+      setRelayResult(result);
+    } catch (e) {
+      setRelayResult({ success: false, latency_ms: 0, relay_url: config.relay_url, error: String(e) });
+    } finally {
+      setIsTestingRelay(false);
+    }
+  };
 
   const isConnected  = status === "Connected";
   const isConnecting = status === "Connecting";
@@ -125,6 +143,48 @@ export default function App() {
               Stesso server usato da AutoBridge Mac
             </span>
           </div>
+
+          <button
+            className="btn-test-relay"
+            onClick={handleTestRelay}
+            disabled={isTestingRelay || locked}
+          >
+            {isTestingRelay
+              ? <><span className="spinner" /> Test in corso...</>
+              : "◎ Test Relay"}
+          </button>
+
+          {relayResult && (
+            <div style={{
+              background: relayResult.success ? "#0d1f17" : "#1a0d10",
+              border: `1px solid ${relayResult.success ? "#1f4a31" : "#4a1f24"}`,
+              borderRadius: "10px",
+              padding: "12px 14px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+              fontSize: "12px",
+            }}>
+              <span style={{ fontWeight: 700, color: relayResult.success ? "#00e87a" : "#ff4060" }}>
+                {relayResult.success ? "✓ Relay raggiungibile" : "✗ Relay non raggiungibile"}
+              </span>
+              {relayResult.success && (
+                <span style={{ color: "#8899aa" }}>
+                  Latenza: <span style={{ color: "#e6edf3", fontFamily: "monospace" }}>
+                    {relayResult.latency_ms} ms
+                  </span>
+                </span>
+              )}
+              {relayResult.error && (
+                <span style={{ color: "#ff4060", fontFamily: "monospace", fontSize: "11px" }}>
+                  {relayResult.error}
+                </span>
+              )}
+              <span style={{ color: "#484f58", fontSize: "10px", wordBreak: "break-all" }}>
+                {relayResult.relay_url}
+              </span>
+            </div>
+          )}
 
           <div className="divider" />
 

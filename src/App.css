@@ -192,6 +192,25 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
 }
 .btn-clear:hover { border-color: var(--border-hi); color: var(--text); }
 
+.btn-test-relay {
+  width: 100%;
+  padding: 8px 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: border-color .15s, color .15s;
+}
+.btn-test-relay:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-test-relay:disabled { opacity: .35; cursor: not-allowed; }
+
 /* ── Spinner ─────────────────────────────────────────────────────────────────── */
 .spinner {
   width: 12px; height: 12px;

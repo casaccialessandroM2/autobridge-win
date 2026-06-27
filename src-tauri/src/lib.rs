@@ -114,6 +114,66 @@ async fn disconnect(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String
     }
 }
 
+// ── Test relay ────────────────────────────────────────────────────────────
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RelayTestResult {
+    pub success:      bool,
+    pub latency_ms:   u32,
+    pub relay_url:    String,
+    pub error:        Option<String>,
+}
+
+#[tauri::command]
+async fn test_relay(state: tauri::State<'_, Arc<AppState>>) -> Result<RelayTestResult, String> {
+    use tokio::time::{timeout, Duration, Instant};
+    use tokio::net::TcpStream;
+
+    let relay_url = state.config.lock().await.relay_url.clone();
+
+    // Estrai host:port dall'URL WebSocket
+    let host_port = relay_url
+        .trim_start_matches("wss://")
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+
+    // Se non ha porta esplicita usa 443 per wss, 80 per ws
+    let addr = if host_port.contains(':') {
+        host_port.clone()
+    } else if relay_url.starts_with("wss://") {
+        format!("{host_port}:443")
+    } else {
+        format!("{host_port}:80")
+    };
+
+    let t0 = Instant::now();
+    match timeout(Duration::from_millis(5000), TcpStream::connect(&addr)).await {
+        Ok(Ok(_)) => Ok(RelayTestResult {
+            success:    true,
+            latency_ms: t0.elapsed().as_millis() as u32,
+            relay_url,
+            error:      None,
+        }),
+        Ok(Err(e)) => Ok(RelayTestResult {
+            success:    false,
+            latency_ms: 0,
+            relay_url,
+            error:      Some(format!("Connessione rifiutata: {e}")),
+        }),
+        Err(_) => Ok(RelayTestResult {
+            success:    false,
+            latency_ms: 0,
+            relay_url,
+            error:      Some("Timeout — relay non raggiungibile".to_string()),
+        }),
+    }
+}
+
 // ── App entry point ────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -127,6 +187,7 @@ pub fn run() {
             update_config,
             connect,
             disconnect,
+            test_relay,
         ])
         .run(tauri::generate_context!())
         .expect("error running AutoBridge Win");
