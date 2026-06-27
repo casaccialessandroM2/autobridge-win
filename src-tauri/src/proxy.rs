@@ -1,22 +1,17 @@
 //! DoIP proxy core — TCP forwarding + UDP Vehicle Discovery.
 //!
-//! Implements the subset of ISO 13400-2 needed by ISTA (BMW):
-//!
-//!   UDP port 13400:
-//!     ← Vehicle Identification Request  (0x0001)
-//!     → Vehicle Identification Response (0x0004)  ← we fake this
-//!
-//!   TCP port 13400:
-//!     ← Routing Activation Request   (0x0005)
-//!     → Routing Activation Response  (0x0006)     ← forwarded to Mac WS
-//!     ↕  Diagnostic messages         (0x4001…)    ← forwarded both ways
+//! Flusso completo:
+//!   ISTA → UDP 13400  Vehicle Identification Request  → rispondiamo localmente
+//!   ISTA → TCP 13400  Routing Activation Request      → rispondiamo localmente (0x0006)
+//!   ISTA → TCP 13400  Diagnostic Message (0x4001)     → estrai UDS → Mac via WS
+//!   Mac  → WS binary  UDS payload                     → wrappa in DoIP → ISTA via TCP
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{timeout, Duration};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
@@ -29,10 +24,16 @@ const DOIP_INV_VERSION: u8    = 0xFD;
 const HEADER_LEN:       usize = 8;
 const MAX_PAYLOAD:      usize = 1 << 20;
 
-// DoIP payload types
 const PT_VEHICLE_ID_REQ:  u16 = 0x0001;
 const PT_VEHICLE_ID_RES:  u16 = 0x0004;
-const PT_VEHICLE_ANNOUNCE: u16 = 0x0100;
+const PT_ROUTING_ACT_REQ: u16 = 0x0005;
+const PT_ROUTING_ACT_RES: u16 = 0x0006;
+const PT_DIAG_MSG:        u16 = 0x4001;
+
+// Indirizzo logico del gateway simulato (ciò che ISTA vede come ECU gateway)
+const GATEWAY_LOGICAL_ADDR: u16 = 0x0001;
+// Indirizzo logico del tester ISTA (standard BMW)
+const TESTER_LOGICAL_ADDR:  u16 = 0x0E00;
 
 // ── Public entry point ─────────────────────────────────────────────────────
 
@@ -52,6 +53,14 @@ pub async fn run_proxy(
     let bind_ip  = config.local_bind_ip.trim().to_string();
     let udp_addr = format!("{}:13400", bind_ip);
     let tcp_addr = format!("{}:13400", bind_ip);
+    let vin      = config.vin.trim().to_string();
+
+    // Valida VIN (solo ASCII stampabile)
+    for b in vin.as_bytes() {
+        if *b < 0x20 || *b > 0x7E {
+            return Err(format!("VIN contiene caratteri non validi: 0x{b:02X}"));
+        }
+    }
 
     // ── Connect WebSocket to Mac ───────────────────────────────────────────
     state.log(&app, LogEntry::info(format!(
@@ -80,17 +89,16 @@ pub async fn run_proxy(
         "UDP discovery in ascolto su {udp_addr}"
     ))).await;
 
-    let vin_str = config.vin.trim().to_string();
-    let udp_sock2 = udp_sock.clone();
-    let app_udp  = app.clone();
-    let st_udp   = state.clone();
-    let bind_ip2 = bind_ip.clone();
-
+    let udp2   = udp_sock.clone();
+    let app_u  = app.clone();
+    let st_u   = state.clone();
+    let vin2   = vin.clone();
+    let ip2    = bind_ip.clone();
     tokio::spawn(async move {
-        udp_discovery_loop(udp_sock2, &vin_str, &bind_ip2, &app_udp, &st_udp).await;
+        udp_discovery_loop(udp2, &vin2, &ip2, &app_u, &st_u).await;
     });
 
-    // ── TCP listener for ISTA ──────────────────────────────────────────────
+    // ── TCP listener ──────────────────────────────────────────────────────
     let listener = TcpListener::bind(&tcp_addr).await
         .map_err(|e| format!("TCP bind {tcp_addr}: {e}"))?;
 
@@ -98,26 +106,41 @@ pub async fn run_proxy(
         "TCP DoIP in ascolto su {tcp_addr} — in attesa di ISTA"
     ))).await;
 
-    // Channels between TCP↔WS
+    // Canale: handler TCP→WS (UDS payload grezzi verso il Mac)
     let (tcp_to_ws_tx, mut tcp_to_ws_rx) = mpsc::channel::<Vec<u8>>(128);
-    let (ws_to_tcp_tx, mut ws_to_tcp_rx) = mpsc::channel::<Vec<u8>>(128);
+
+    // Broadcast: Mac→WS→TCP (UDS grezzi verso tutti i client ISTA connessi)
+    let (ws_to_tcp_bcast, _dummy_rx) = broadcast::channel::<Vec<u8>>(128);
+    // Manteniamo un receiver "dummy" per evitare che SendError quando nessun
+    // client è connesso dropi silenziosamente i frame
+    let ws_to_tcp_bcast2 = ws_to_tcp_bcast.clone();
+    tokio::spawn(async move {
+        let mut dummy = ws_to_tcp_bcast2.subscribe();
+        while dummy.recv().await.is_ok() { /* mantiene vivo il sender */ }
+    });
 
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    // WS receive → tcp_write channel
-    let sd_ws = shutdown.clone();
-    let wt2   = ws_to_tcp_tx.clone();
-    let app_w = app.clone();
-    let st_w  = state.clone();
+    // WS receive → broadcast a tutti i client TCP
+    let sd_ws   = shutdown.clone();
+    let bcast3  = ws_to_tcp_bcast.clone();
+    let app_w   = app.clone();
+    let st_w    = state.clone();
     tokio::spawn(async move {
         while let Some(msg) = ws_rx.next().await {
             if sd_ws.load(Ordering::Relaxed) { break; }
             match msg {
                 Ok(Message::Binary(data)) => {
                     st_w.log(&app_w, LogEntry::doip(
-                        format!("← Mac→Win [WS] {} bytes", data.len())
+                        format!("← Mac→Win [WS] {} bytes UDS", data.len())
                     )).await;
-                    if wt2.send(data.to_vec()).await.is_err() { break; }
+                    // Invia a tutti i client ISTA connessi (broadcast)
+                    if bcast3.send(data.to_vec()).is_err() {
+                        // Nessun subscriber attivo — loghiamo solo in debug
+                        st_w.log(&app_w, LogEntry::debug(
+                            "← WS frame ricevuto ma nessun client ISTA connesso"
+                        )).await;
+                    }
                 }
                 Ok(Message::Close(_)) | Err(_) => {
                     st_w.log(&app_w, LogEntry::warn("WebSocket chiuso dal Mac")).await;
@@ -129,7 +152,7 @@ pub async fn run_proxy(
         }
     });
 
-    // tcp_to_ws channel → WS send
+    // tcp_to_ws channel → WS send (dati da ISTA verso Mac)
     let sd_tx = shutdown.clone();
     tokio::spawn(async move {
         while let Some(data) = tcp_to_ws_rx.recv().await {
@@ -150,12 +173,17 @@ pub async fn run_proxy(
                         state.log(&app, LogEntry::info(
                             format!("ISTA connesso da {peer}")
                         )).await;
+
+                        // Ogni client ottiene il proprio receiver broadcast
+                        let ws_rx_client = ws_to_tcp_bcast.subscribe();
+
                         handle_ista_client(
                             tcp, peer,
                             tcp_to_ws_tx.clone(),
-                            &mut ws_to_tcp_rx,
+                            ws_rx_client,
                             &app, &state, &shutdown,
                         ).await;
+
                         state.log(&app, LogEntry::info(
                             format!("ISTA disconnesso: {peer}")
                         )).await;
@@ -187,20 +215,20 @@ pub async fn run_proxy(
 // ── UDP discovery loop ─────────────────────────────────────────────────────
 
 async fn udp_discovery_loop(
-    sock:     Arc<UdpSocket>,
-    vin:      &str,
-    bind_ip:  &str,
-    app:      &AppHandle,
-    state:    &Arc<AppState>,
+    sock:    Arc<UdpSocket>,
+    vin:     &str,
+    bind_ip: &str,
+    app:     &AppHandle,
+    state:   &Arc<AppState>,
 ) {
     let mut buf = [0u8; 256];
 
-    // Send an initial Vehicle Announcement so ISTA finds us immediately
-    if let Ok(bcast_addr) = broadcast_addr_for(bind_ip) {
-        let ann = build_vehicle_id_response(vin, bind_ip);
-        let _ = sock.send_to(&ann, &bcast_addr).await;
+    // Invia Vehicle Announcement iniziale
+    if let Ok(bcast) = broadcast_addr_for(bind_ip) {
+        let ann = build_vehicle_id_response(vin);
+        let _ = sock.send_to(&ann, &bcast).await;
         state.log(app, LogEntry::doip(
-            format!("→ Vehicle Announcement broadcast → {bcast_addr}")
+            format!("→ Vehicle Announcement → {bcast}")
         )).await;
     }
 
@@ -219,10 +247,8 @@ async fn udp_discovery_loop(
                 state.log(app, LogEntry::doip(
                     format!("← Vehicle Identification Request da {from}")
                 )).await;
-
-                let resp = build_vehicle_id_response(vin, bind_ip);
+                let resp = build_vehicle_id_response(vin);
                 let _ = sock.send_to(&resp, from).await;
-
                 state.log(app, LogEntry::doip(
                     format!("→ Vehicle Identification Response → {from}")
                 )).await;
@@ -232,63 +258,13 @@ async fn udp_discovery_loop(
     }
 }
 
-// ── Build Vehicle Identification Response (DoIP 0x0004) ───────────────────
-//
-// Payload layout (ISO 13400-2 Table 10):
-//   VIN        17 bytes  (ASCII, padded with 0x00)
-//   LogAddr     2 bytes  gateway logical address
-//   EID         6 bytes  entity ID (we use a fixed fake MAC)
-//   GID         6 bytes  group ID  (we use zeros)
-//   FurtherAction 1 byte (0x00 = no further action)
-fn build_vehicle_id_response(vin: &str, _bind_ip: &str) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(33);
-
-    // VIN — pad/truncate to 17 bytes
-    let mut vin_bytes = [0u8; 17];
-    let src = vin.as_bytes();
-    let copy_len = src.len().min(17);
-    vin_bytes[..copy_len].copy_from_slice(&src[..copy_len]);
-    payload.extend_from_slice(&vin_bytes);
-
-    // Logical address of gateway (same as target on Mac side)
-    payload.extend_from_slice(&0x0010u16.to_be_bytes());
-
-    // EID — fake MAC-like identifier
-    payload.extend_from_slice(&[0xAB, 0xB0, 0x1D, 0x6E, 0x00, 0x01]);
-
-    // GID — zeros
-    payload.extend_from_slice(&[0u8; 6]);
-
-    // Further action required
-    payload.push(0x00);
-
-    build_doip_frame(PT_VEHICLE_ID_RES, &payload)
-}
-
-fn build_doip_frame(pt: u16, payload: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(HEADER_LEN + payload.len());
-    frame.push(DOIP_VERSION);
-    frame.push(DOIP_INV_VERSION);
-    frame.extend_from_slice(&pt.to_be_bytes());
-    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    frame.extend_from_slice(payload);
-    frame
-}
-
-// Derive broadcast address from bind IP (e.g. 169.254.12.5 → 169.254.255.255)
-fn broadcast_addr_for(ip: &str) -> Result<String, ()> {
-    let parts: Vec<&str> = ip.split('.').collect();
-    if parts.len() != 4 { return Err(()); }
-    Ok(format!("{}.{}.255.255:13400", parts[0], parts[1]))
-}
-
 // ── Per-client ISTA handler ────────────────────────────────────────────────
 
 async fn handle_ista_client(
     mut tcp:      tokio::net::TcpStream,
     peer:         SocketAddr,
     tcp_to_ws_tx: mpsc::Sender<Vec<u8>>,
-    ws_to_tcp_rx: &mut mpsc::Receiver<Vec<u8>>,
+    mut ws_bcast: broadcast::Receiver<Vec<u8>>,
     app:          &AppHandle,
     state:        &Arc<AppState>,
     shutdown:     &Arc<AtomicBool>,
@@ -301,43 +277,101 @@ async fn handle_ista_client(
         let mut header = [0u8; HEADER_LEN];
 
         tokio::select! {
-            // TCP → WS
+            // ── TCP (ISTA) → process o forward WS ───────────────────────
             r = tcp_rx.read_exact(&mut header) => {
                 if r.is_err() { break; }
 
+                // Valida versione DoIP
+                if header[0] != DOIP_VERSION || header[1] != DOIP_INV_VERSION {
+                    state.log(app, LogEntry::warn(
+                        format!("Header DoIP non valido: ver={:02X}/{:02X} — ignoro",
+                            header[0], header[1])
+                    )).await;
+                    continue;
+                }
+
+                let pt          = u16::from_be_bytes([header[2], header[3]]);
                 let payload_len = u32::from_be_bytes([
                     header[4], header[5], header[6], header[7],
                 ]) as usize;
 
-                if payload_len > MAX_PAYLOAD { break; }
-
-                let mut frame = Vec::with_capacity(HEADER_LEN + payload_len);
-                frame.extend_from_slice(&header);
-                if payload_len > 0 {
-                    frame.resize(HEADER_LEN + payload_len, 0);
-                    if tcp_rx.read_exact(&mut frame[HEADER_LEN..]).await.is_err() { break; }
+                if payload_len > MAX_PAYLOAD {
+                    state.log(app, LogEntry::error(
+                        format!("Payload DoIP troppo grande: {payload_len} bytes — chiudo")
+                    )).await;
+                    break;
                 }
 
-                let pt = u16::from_be_bytes([header[2], header[3]]);
-                state.log(app, LogEntry::doip(
-                    format!("→ ISTA→Mac  type=0x{pt:04X}  {} bytes", frame.len())
-                )).await;
+                let mut payload = vec![0u8; payload_len];
+                if payload_len > 0 {
+                    if tcp_rx.read_exact(&mut payload).await.is_err() { break; }
+                }
 
-                if tcp_to_ws_tx.send(frame).await.is_err() { break; }
+                match pt {
+                    // ── Routing Activation Request → rispondi localmente ──
+                    PT_ROUTING_ACT_REQ => {
+                        let tester_addr = if payload.len() >= 2 {
+                            u16::from_be_bytes([payload[0], payload[1]])
+                        } else {
+                            TESTER_LOGICAL_ADDR
+                        };
+                        state.log(app, LogEntry::doip(
+                            format!("← Routing Activation Request  [tester=0x{tester_addr:04X}]")
+                        )).await;
+
+                        let resp = build_routing_activation_response(tester_addr);
+                        if tcp_tx.write_all(&resp).await.is_err() { break; }
+
+                        state.log(app, LogEntry::doip(
+                            "→ Routing Activation Response: attivato (0x10)"
+                        )).await;
+                    }
+
+                    // ── Diagnostic Message → estrai UDS e manda al Mac ───
+                    PT_DIAG_MSG if payload.len() >= 4 => {
+                        let src = u16::from_be_bytes([payload[0], payload[1]]);
+                        let tgt = u16::from_be_bytes([payload[2], payload[3]]);
+                        let uds = payload[4..].to_vec();
+
+                        state.log(app, LogEntry::doip(
+                            format!("→ ISTA→Mac  [src=0x{src:04X} tgt=0x{tgt:04X}] {} bytes UDS",
+                                uds.len())
+                        )).await;
+
+                        // Manda solo il payload UDS al Mac (non il frame DoIP intero)
+                        if tcp_to_ws_tx.send(uds).await.is_err() { break; }
+                    }
+
+                    // ── Alive Check Request → rispondi localmente ─────────
+                    0x0007 => {
+                        let resp = build_doip_frame(0x0008, &[]);
+                        let _ = tcp_tx.write_all(&resp).await;
+                    }
+
+                    pt => {
+                        state.log(app, LogEntry::debug(
+                            format!("← Frame DoIP tipo 0x{pt:04X} [{payload_len} bytes] — ignoro")
+                        )).await;
+                    }
+                }
             }
 
-            // WS → TCP
-            ws_data = ws_to_tcp_rx.recv() => {
-                match ws_data {
-                    Some(data) => {
-                        // Data from Mac is raw UDS — wrap in DoIP Diagnostic Message
-                        let frame = wrap_doip_diagnostic(&data);
+            // ── WS (Mac) → wrappa in DoIP → TCP (ISTA) ───────────────────
+            bcast_msg = ws_bcast.recv() => {
+                match bcast_msg {
+                    Ok(uds) => {
                         state.log(app, LogEntry::doip(
-                            format!("← Mac→ISTA  {} bytes UDS", data.len())
+                            format!("← Mac→ISTA  {} bytes UDS", uds.len())
                         )).await;
+                        let frame = wrap_doip_diagnostic(&uds);
                         if tcp_tx.write_all(&frame).await.is_err() { break; }
                     }
-                    None => break,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        state.log(app, LogEntry::warn(
+                            format!("ISTA [{peer}] lento: {n} frame persi")
+                        )).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         }
@@ -346,10 +380,73 @@ async fn handle_ista_client(
     let _ = peer;
 }
 
+// ── DoIP frame builders ────────────────────────────────────────────────────
+
+fn build_doip_frame(pt: u16, payload: &[u8]) -> Vec<u8> {
+    let mut f = Vec::with_capacity(HEADER_LEN + payload.len());
+    f.push(DOIP_VERSION);
+    f.push(DOIP_INV_VERSION);
+    f.extend_from_slice(&pt.to_be_bytes());
+    f.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    f.extend_from_slice(payload);
+    f
+}
+
+/// Vehicle Identification Response (ISO 13400-2:2019 Table 10)
+/// Payload: VIN(17) + LogAddr(2) + EID(6) + GID(6) + FurtherAction(1) = 33 bytes
+fn build_vehicle_id_response(vin: &str) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(33);
+
+    let mut vin_bytes = [0u8; 17];
+    let src = vin.as_bytes();
+    vin_bytes[..src.len().min(17)].copy_from_slice(&src[..src.len().min(17)]);
+    payload.extend_from_slice(&vin_bytes);                        // VIN       17 bytes
+    payload.extend_from_slice(&GATEWAY_LOGICAL_ADDR.to_be_bytes()); // LogAddr    2 bytes
+    payload.extend_from_slice(&[0xAB, 0xB0, 0x1D, 0x6E, 0x00, 0x01]); // EID   6 bytes
+    payload.extend_from_slice(&[0u8; 6]);                         // GID        6 bytes
+    payload.push(0x00);                                           // FurtherAction 1 byte
+
+    build_doip_frame(PT_VEHICLE_ID_RES, &payload)
+}
+
+/// Routing Activation Response (ISO 13400-2:2019 Table 20)
+/// Payload: TesterAddr(2) + GatewayAddr(2) + ResponseCode(1) + Reserved(4) = 9 bytes
+fn build_routing_activation_response(tester_addr: u16) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(9);
+    payload.extend_from_slice(&tester_addr.to_be_bytes());            // Tester addr
+    payload.extend_from_slice(&GATEWAY_LOGICAL_ADDR.to_be_bytes());   // Gateway addr
+    payload.push(0x10);                                               // 0x10 = routing activated OK
+    payload.extend_from_slice(&[0u8; 4]);                             // Reserved
+    build_doip_frame(PT_ROUTING_ACT_RES, &payload)
+}
+
+/// Wrappa UDS payload in un DoIP Diagnostic Message per ISTA
+/// src = gateway ECU (0x0001), tgt = tester ISTA (0x0E00)
 fn wrap_doip_diagnostic(uds: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(4 + uds.len());
-    payload.extend_from_slice(&0x0010u16.to_be_bytes()); // src = gateway
-    payload.extend_from_slice(&0x0E00u16.to_be_bytes()); // tgt = tester
+    payload.extend_from_slice(&GATEWAY_LOGICAL_ADDR.to_be_bytes()); // src = ECU/gateway
+    payload.extend_from_slice(&TESTER_LOGICAL_ADDR.to_be_bytes());  // tgt = ISTA tester
     payload.extend_from_slice(uds);
-    build_doip_frame(0x4001, &payload)
+    build_doip_frame(PT_DIAG_MSG, &payload)
+}
+
+/// Calcola indirizzo broadcast usando le interfacce di sistema (subnet corretta)
+fn broadcast_addr_for(bind_ip: &str) -> Result<String, ()> {
+    if let Ok(ifaces) = if_addrs::get_if_addrs() {
+        for iface in ifaces {
+            if let if_addrs::IfAddr::V4(v4) = &iface.addr {
+                if v4.ip.to_string() == bind_ip {
+                    if let Some(bcast) = v4.broadcast {
+                        return Ok(format!("{bcast}:13400"));
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: usa /24 broadcast
+    let parts: Vec<&str> = bind_ip.split('.').collect();
+    if parts.len() == 4 {
+        return Ok(format!("{}.{}.{}.255:13400", parts[0], parts[1], parts[2]));
+    }
+    Err(())
 }
