@@ -161,6 +161,21 @@ pub async fn run_proxy(
             while let Some(msg) = ws_rx.next().await {
                 if sd.load(Ordering::Relaxed) { break; }
                 let text = match msg {
+                    // HOT PATH: frame binario = dato (canale + payload) → a ISTA.
+                    Ok(Message::Binary(buf)) => {
+                        if let Some((&ch, rest)) = buf.split_first() {
+                            match ch {
+                                CH_TCP => { let _ = bcast.send(rest.to_vec()); }
+                                CH_UDP => {
+                                    if let Some(addr) = *last.lock().await {
+                                        let _ = sock.send_to(rest, addr).await;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        continue;
+                    }
                     Ok(Message::Text(t)) => t.to_string(),
                     Ok(Message::Close(_)) | Err(_) => {
                         st_w.log(&app_w, LogEntry::warn("Connessione relay chiusa")).await;
@@ -210,10 +225,8 @@ pub async fn run_proxy(
                     framed = to_relay_rx.recv() => {
                         match framed {
                             Some(bytes) => {
-                                use base64::Engine;
-                                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                                let msg = json!({"type":"data","session_id":sid,"payload":b64});
-                                if ws_tx.send(Message::Text(msg.to_string().into())).await.is_err() {
+                                // Dato grezzo come frame BINARIO (no base64/JSON).
+                                if ws_tx.send(Message::Binary(bytes.into())).await.is_err() {
                                     sd.store(true, Ordering::Relaxed); break;
                                 }
                             }
