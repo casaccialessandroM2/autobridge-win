@@ -51,7 +51,9 @@ pub async fn run_proxy(
     let session_id = config.session_id.trim().to_uppercase();
     let bind_ip    = config.local_bind_ip.trim().to_string();
     let tcp_addr   = format!("{}:{}", bind_ip, config.tcp_port);
-    let udp_addr   = format!("{}:{}", bind_ip, config.udp_port);
+    // UDP discovery: bind su 0.0.0.0 per ricevere ANCHE i broadcast di ISTA
+    // (un socket legato a un IP unicast specifico non li riceve su Windows).
+    let udp_addr   = format!("0.0.0.0:{}", config.udp_port);
 
     let device_id = format!("win-{:x}",
         std::time::SystemTime::now()
@@ -284,6 +286,7 @@ async fn handle_ista_client(
     app:          AppHandle,
     state:        Arc<AppState>,
 ) {
+    let _ = tcp.set_nodelay(true); // bassa latenza diagnostica
     let (mut tcp_rx, mut tcp_tx) = tcp.into_split();
     let mut buf = vec![0u8; 65536];
 
