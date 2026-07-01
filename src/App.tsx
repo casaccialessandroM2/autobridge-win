@@ -175,8 +175,8 @@ export default function App() {
       <header style={S.header}>
         <div style={S.logoRow}>
           <div style={S.logoMark}>‹/›</div>
-          <span style={S.logoText}>AutoBridge <span style={{ color: C.blue }}>Win</span></span>
-          <span style={S.badge}>v0.1.3</span>
+          <span style={S.logoText}>AutoBridge <span style={{ color: C.blue }}>Service</span></span>
+          <span style={S.badge}>v0.2.0</span>
           <span style={{ ...S.badge, color: C.muted, borderColor: `${C.muted}33`, background: `${C.muted}10` }}>ISTA · Tunnel</span>
         </div>
         <div style={{
