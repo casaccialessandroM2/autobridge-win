@@ -22,7 +22,7 @@ use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::time::{timeout, Duration, interval};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use serde_json::{json, Value};
 
 use crate::state::{AppState, LogEntry, ProxyCommand};
@@ -88,7 +88,13 @@ pub async fn run_proxy(
             if let Ok(Message::Text(text)) = msg {
                 if let Ok(val) = serde_json::from_str::<Value>(&text) {
                     match val.get("type").and_then(|t| t.as_str()) {
-                        Some("session_joined") => return Ok(()),
+                        Some("session_joined") => {
+                            // VIN già noto dal Mac: mostralo subito.
+                            if let Some(v) = val.get("vin").and_then(|x| x.as_str()) {
+                                if !v.is_empty() { let _ = app.emit("vin_detected", v); }
+                            }
+                            return Ok(());
+                        }
                         Some("error") => {
                             let reason = val.get("reason").and_then(|r| r.as_str()).unwrap_or("sconosciuto");
                             return Err(format!("Relay: {reason}"));
@@ -200,6 +206,14 @@ pub async fn run_proxy(
                                         _ => {}
                                     }
                                 }
+                            }
+                        }
+                    }
+                    Some("vin") => {
+                        if let Some(v) = val.get("vin").and_then(|x| x.as_str()) {
+                            if !v.is_empty() {
+                                let _ = app_w.emit("vin_detected", v);
+                                st_w.log(&app_w, LogEntry::info(format!("VIN dal Mac: {v}"))).await;
                             }
                         }
                     }
